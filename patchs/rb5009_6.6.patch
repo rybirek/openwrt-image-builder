@@ -1,0 +1,2074 @@
+From 805aa64a8e53c29ecf4e71adeae1a03e564c89d3 Mon Sep 17 00:00:00 2001
+From: Serhii Serhieiev <adron@mstnt.com>
+Date: Wed, 9 Feb 2022 09:07:57 +0200
+Subject: [PATCH 01/15] generic: fix mikrotik/rb_softconfig work(crc mismatch)
+ with 64K block size
+
+Signed-off-by: Serhii Serhieiev <adron@mstnt.com>
+---
+ .../files/drivers/platform/mikrotik/rb_softconfig.c        | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/target/linux/generic/files/drivers/platform/mikrotik/rb_softconfig.c b/target/linux/generic/files/drivers/platform/mikrotik/rb_softconfig.c
+index 5acff6aa91..2332089a46 100644
+--- a/target/linux/generic/files/drivers/platform/mikrotik/rb_softconfig.c
++++ b/target/linux/generic/files/drivers/platform/mikrotik/rb_softconfig.c
+@@ -58,6 +58,7 @@
+ 
+ #define RB_SOFTCONFIG_VER		"0.05"
+ #define RB_SC_PR_PFX			"[rb_softconfig] "
++#define SOFT_CONF_FIXED_SIZE 0x1000
+ 
+ #define RB_SC_HAS_WRITE_SUPPORT	true
+ #define RB_SC_WMODE			S_IWUSR
+@@ -636,7 +637,7 @@ static ssize_t sc_commit_store(struct kobject *kobj, struct kobj_attribute *attr
+ 
+ 	write_lock(&sc_bufrwl);
+ 	if (!flush)	// reread
+-		ret = mtd_read(mtd, 0, mtd->size, &bytes_rw, sc_buf);
++		ret = mtd_read(mtd, 0, sc_buflen, &bytes_rw, sc_buf);
+ 	else {	// crc32 + commit
+ 		/*
+ 		 * CRC32 is computed on the entire buffer, excluding the CRC
+@@ -658,7 +659,7 @@ static ssize_t sc_commit_store(struct kobject *kobj, struct kobj_attribute *attr
+ 		ei.len = mtd->size;
+ 		ret = mtd_erase(mtd, &ei);
+ 		if (!ret)
+-			ret = mtd_write(mtd, 0, mtd->size, &bytes_rw, sc_buf);
++			ret = mtd_write(mtd, 0, sc_buflen, &bytes_rw, sc_buf);
+ 
+ 		/*
+ 		 * Handling mtd_write() failure here is a tricky situation. The
+@@ -708,7 +709,7 @@ int rb_softconfig_init(struct kobject *rb_kobj, struct mtd_info *mtd)
+ 	if (ret)
+ 		return -ENODEV;
+ 
+-	sc_buflen = mtd->size;
++	sc_buflen = mtd->size > SOFT_CONF_FIXED_SIZE ? SOFT_CONF_FIXED_SIZE : mtd->size;
+ 	sc_buf = kmalloc(sc_buflen, GFP_KERNEL);
+ 	if (!sc_buf) {
+ 		__put_mtd_device(mtd);
+-- 
+2.43.0
+
+
+From a04e4754e5930bfb5a28bd0a048072d3ae47c9d5 Mon Sep 17 00:00:00 2001
+From: Serhii Serhieiev <adron@mstnt.com>
+Date: Wed, 9 Feb 2022 09:32:30 +0200
+Subject: [PATCH 02/15] mvebu: add aux-loader2 support
+
+This auxiliary bootloader implements the ability to run the OpenWrt Linux kernel(FIT image)
+from the RouterBOOT. The thing is that RouterBOOT is able to load ONLY program code in ELF format.
+To bypass this restriction, the auxiliary bootloader extends the capabilities of the RouterBOOT -
+by adding support for loading system from FIT images.
+
+Source code is available under GPLv2: https://github.com/adron-s/aux-loader2
+
+Signed-off-by: Serhii Serhieiev <adron@mstnt.com>
+[Removed RB5009 Makefile entry from this commit]
+Signed-off-by: Stijn Segers <foss@volatilesystems.org>
+---
+ target/linux/mvebu/image/Makefile           |  12 ++++++++++++
+ target/linux/mvebu/image/bin/aux-loader.elf | Bin 0 -> 65880 bytes
+ 2 files changed, 12 insertions(+)
+ create mode 100644 target/linux/mvebu/image/bin/aux-loader.elf
+
+diff --git a/target/linux/mvebu/image/Makefile b/target/linux/mvebu/image/Makefile
+index 96bfed9eec..eef7b8b658 100644
+--- a/target/linux/mvebu/image/Makefile
++++ b/target/linux/mvebu/image/Makefile
+@@ -151,6 +151,18 @@ define Build/uDPU-firmware
+ 		-f $(KDIR_TMP)/$(DEVICE_IMG_PREFIX)-firmware.tgz -C $@-fw .
+ endef
+ 
++define Device/FitImageLzma
++  KERNEL_SUFFIX := -fit-uImage.itb
++  KERNEL := kernel-bin | lzma | fit lzma $$(KDIR)/image-$$(DEVICE_DTS).dtb | pad-to 64k
++  KERNEL_NAME := Image
++endef
++
++define Build/aux-loader
++  -[ -f "$@" ] && [ -f "bin/aux-loader.elf" ] &&	\
++ 	cat "bin/aux-loader.elf" "$@" > "$@.tmp" &&	\
++ 	cat "$@.tmp" > "$@" && rm -f "$@.tmp"
++endef
++
+ define Device/Default
+   PROFILES := Default
+   DEVICE_DTS = $$(SOC)-$(lastword $(subst _, ,$(1)))
+diff --git a/target/linux/mvebu/image/bin/aux-loader.elf b/target/linux/mvebu/image/bin/aux-loader.elf
+new file mode 100644
+index 0000000000000000000000000000000000000000..a8f19ec360ff92cb2e77a052fcc2502e612bb413
+GIT binary patch
+literal 65880
+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
+BUa$ZF
+
+literal 0
+HcmV?d00001
+
+-- 
+2.43.0
+
+
+From 2572180709503ae53dfb01c62ac99ed9f63ece95 Mon Sep 17 00:00:00 2001
+From: Serhii Serhieiev <adron@mstnt.com>
+Date: Wed, 9 Feb 2022 09:45:47 +0200
+Subject: [PATCH 03/15] mvebu: add support for RB5009UG+S+IN.
+
+This patch adds support for Mikrotik RB5009UG+S+IN.
+
+Specifications:
+  - SoC: Marvell Armada 7040 (88F7040) - 4 cores, ARMv8, 1.4GHz, 64bit
+  - RAM: 1024MB DDR4
+  - Flash: 16MB SPI NOR flash, 1024MB NAND
+  - Ethernet: One Marvell 88E6393X - Amethyst: one 2.5G + seven 1G ports and one SFP+
+  - LED: User, SFP, Hdr1, Hdr2
+  - Buttons: Reset
+  - UART: 115200 8n1
+  - USB: One USB3 port
+Signed-off-by: Serhii Serhieiev <adron@mstnt.com>
+[Added RB5009 Makefile entry to this patch]
+Signed-off-by: Stijn Segers <foss@volatilesystems.org
+---
+ .../base-files/etc/board.d/02_network         |   3 +
+ .../base-files/lib/upgrade/platform.sh        |   4 +
+ .../boot/dts/marvell/armada-7040-rb5009.dts   | 377 ++++++++++++++++++
+ target/linux/mvebu/image/cortexa72.mk         |  19 +
+ 4 files changed, 403 insertions(+)
+ create mode 100644 target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts
+
+diff --git a/target/linux/mvebu/cortexa72/base-files/etc/board.d/02_network b/target/linux/mvebu/cortexa72/base-files/etc/board.d/02_network
+index 93dadf491b..8f8a9f37f2 100644
+--- a/target/linux/mvebu/cortexa72/base-files/etc/board.d/02_network
++++ b/target/linux/mvebu/cortexa72/base-files/etc/board.d/02_network
+@@ -32,6 +32,9 @@ marvell,armada7040-db)
+ marvell,armada8040-clearfog-gt-8k)
+ 	ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 eth2" "eth0 eth1"
+ 	;;
++mikrotik,rb5009)
++	ucidef_set_interfaces_lan_wan "p2 p3 p4 p5 p6 p7 p8" "sfp p1"
++	;;
+ solidrun,clearfog-pro)
+ 	ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 lan5 lan6 eth0 eth1" "eth2"
+ 	;;
+diff --git a/target/linux/mvebu/cortexa72/base-files/lib/upgrade/platform.sh b/target/linux/mvebu/cortexa72/base-files/lib/upgrade/platform.sh
+index c7f20a6d7c..539894185c 100755
+--- a/target/linux/mvebu/cortexa72/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mvebu/cortexa72/base-files/lib/upgrade/platform.sh
+@@ -37,6 +37,10 @@ platform_do_upgrade() {
+ 	solidrun,clearfog-pro)
+ 		legacy_sdcard_do_upgrade "$1"
+ 		;;
++	mikrotik,rb5009)
++		PART_NAME=firmware
++		default_do_upgrade "$1"
++		;;
+ 	*)
+ 		default_do_upgrade "$1"
+ 		;;
+diff --git a/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts b/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts
+new file mode 100644
+index 0000000000..66c74451f0
+--- /dev/null
++++ b/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts
+@@ -0,0 +1,377 @@
++// SPDX-License-Identifier: GPL-2.0-or-later OR MIT
++
++/dts-v1/;
++
++#include "armada-7040.dtsi"
++#include <dt-bindings/gpio/gpio.h>
++#include <dt-bindings/input/input.h>
++
++/ {
++	model = "MikroTik RB5009";
++	compatible = "mikrotik,rb5009", "marvell,armada7040",
++		     "marvell,armada-ap806-quad", "marvell,armada-ap806";
++
++	chosen {
++		stdout-path = "serial0:115200n8";
++	};
++
++	memory@0 {
++		device_type = "memory";
++		reg = <0x0 0x0 0x0 0x40000000>;
++	};
++
++	aliases {
++		led-boot = &led_user;
++		led-failsafe = &led_user;
++		led-running = &led_user;
++		led-upgrade = &led_user;
++	};
++
++	sfp_i2c: sfp-i2c {
++		compatible = "i2c-gpio";
++		sda-gpios = <&cp0_gpio1 0 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)>;
++		scl-gpios = <&cp0_gpio1 1 (GPIO_ACTIVE_HIGH|GPIO_OPEN_DRAIN)>;
++	};
++
++	keys {
++		compatible = "gpio-keys";
++
++		reset {
++			label = "reset";
++			gpios = <&cp0_gpio1 28 GPIO_ACTIVE_LOW>;
++			linux,code = <KEY_RESTART>;
++		};
++	};
++
++	leds {
++		compatible = "gpio-leds";
++
++		led_user: user {
++			label = "green:user";
++			gpios = <&cp0_gpio2 26 GPIO_ACTIVE_LOW>;
++		};
++
++		sfp {
++			label = "green:sfp";
++			gpios = <&cp0_gpio2 25 GPIO_ACTIVE_LOW>;
++		};
++
++		hdr1 {
++			label = "blue:hdr1";
++			gpios = <&cp0_gpio1 4 GPIO_ACTIVE_LOW>;
++		};
++
++		hdr2 {
++			label = "blue:hdr2";
++			gpios = <&cp0_gpio2 19 GPIO_ACTIVE_LOW>;
++		};
++	};
++
++	sfp: sfp {
++		compatible = "sff,sfp";
++		i2c-bus = <&sfp_i2c>;
++	};
++};
++
++&uart0 {
++	status = "okay";
++
++	pinctrl-0 = <&uart0_pins>;
++	pinctrl-names = "default";
++};
++
++
++&spi0 {
++	status = "okay";
++
++	spi-flash@0 {
++		#address-cells = <1>;
++		#size-cells = <1>;
++		compatible = "jedec,spi-nor";
++		reg = <0>;
++		spi-max-frequency = <20000000>;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "ATF";
++				reg = <0x0 0x95c04>;
++				read-only;
++			};
++			partition@1 {
++				label = "backup_RouterBOOT";
++				reg = <0x95c04 0x193FC>;
++				read-only;
++			};
++			hard_config: partition@2 {
++				label = "hard_config";
++				reg = <0xaf000 0x1000>;
++				read-only;
++			};
++			partition@3 {
++				label = "RouterBOOT";
++				reg = <0xb0000 0x10000>;
++			};
++			partition@4 {
++				label = "soft_config";
++				reg = <0xc0000 0x10000>;
++			};
++			partition@5 {
++				label = "DTS";
++				reg = <0xd0000 0x10000>;
++				read-only;
++			};
++			partition@6 {
++				label = "free_space";
++				reg = <0xe0000 0x20000>;
++			};
++			partition@7 {
++				compatible = "denx,fit";
++				label = "firmware";
++				reg = <0x100000 0xf00000>;
++			};
++			partition@8 {
++				label = "first_1M";
++				reg = <0x0 0x100000>;
++			};
++		};
++	};
++};
++
++&cp0_nand_controller {
++	status = "okay";
++
++	nand@0 {
++		reg = <0>;
++		nand-rb = <0>;
++		nand-ecc-mode = "hw";
++		nand-ecc-strength = <4>;
++		nand-ecc-step-size = <512>;
++		nand-on-flash-bbt;
++
++		partitions {
++			compatible = "fixed-partitions";
++			#address-cells = <1>;
++			#size-cells = <1>;
++
++			partition@0 {
++				label = "RouterBoard NAND Boot";
++				reg = <0x0 0x800000>;
++			};
++
++			partition@800000 {
++				label = "RouterBoard NAND Main";
++				reg = <0x800000 0x3f800000>;
++			};
++		};
++	};
++};
++
++&cp0_gpio2 {
++	enable-usb-power {
++		gpio-hog;
++		gpios = <23 GPIO_ACTIVE_HIGH>;
++		output-high;
++		line-name = "enable USB power";
++	};
++
++	enable-leds-power {
++		gpio-hog;
++		gpios = <27 GPIO_ACTIVE_HIGH>;
++		output-high;
++		line-name = "enable LED-s power";
++	};
++};
++
++&cp0_usb3_1 {
++	status = "okay";
++};
++
++&cp0_i2c0 {
++	status = "okay";
++	clock-frequency = <100000>;
++};
++
++&cp0_mdio {
++	status = "okay";
++};
++
++&cp0_ethernet {
++	status = "okay";
++};
++
++&cp0_eth0 {
++	/* This port is connected to 88E6393X switch */
++	status = "okay";
++	phy-mode = "10gbase-r";
++	managed = "in-band-status";
++	nvmem-cells = <&macaddr_hard>;
++	nvmem-cell-names = "mac-address";
++	mac-address-increment = <0>;
++};
++
++&cp0_mdio {
++	status = "okay";
++
++	switch@0 {
++		/* Actual device is MV88E6393X */
++		compatible = "marvell,mv88e6190";
++		#address-cells = <1>;
++		#size-cells = <0>;
++		reg = <0>;
++		//strict-cpu-mode = <1>;
++		//reset-gpios = <&cp0_gpio2 2 GPIO_ACTIVE_HIGH>;
++
++		ports {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			port@0 {
++				reg = <0>;
++				label = "cpu";
++				ethernet = <&cp0_eth0>;
++			};
++
++			port@1 {
++				reg = <1>;
++				label = "p8";
++				phy-handle = <&switch0phy1>;
++				nvmem-cells = <&macaddr_hard>;
++				nvmem-cell-names = "mac-address";
++				mac-address-increment = <7>;
++			};
++
++			port@2 {
++				reg = <2>;
++				label = "p7";
++				phy-handle = <&switch0phy2>;
++				nvmem-cells = <&macaddr_hard>;
++				nvmem-cell-names = "mac-address";
++				mac-address-increment = <6>;
++			};
++
++			port@3 {
++				reg = <3>;
++				label = "p6";
++				phy-handle = <&switch0phy3>;
++				nvmem-cells = <&macaddr_hard>;
++				nvmem-cell-names = "mac-address";
++				mac-address-increment = <5>;
++			};
++
++			port@4 {
++				reg = <4>;
++				label = "p5";
++				phy-handle = <&switch0phy4>;
++				nvmem-cells = <&macaddr_hard>;
++				nvmem-cell-names = "mac-address";
++				mac-address-increment = <4>;
++			};
++
++			port@5 {
++				reg = <5>;
++				label = "p4";
++				phy-handle = <&switch0phy5>;
++				nvmem-cells = <&macaddr_hard>;
++				nvmem-cell-names = "mac-address";
++				mac-address-increment = <3>;
++			};
++
++			port@6 {
++				reg = <6>;
++				label = "p3";
++				phy-handle = <&switch0phy6>;
++				nvmem-cells = <&macaddr_hard>;
++				nvmem-cell-names = "mac-address";
++				mac-address-increment = <2>;
++			};
++
++			port@7 {
++				reg = <7>;
++				label = "p2";
++				phy-handle = <&switch0phy7>;
++				nvmem-cells = <&macaddr_hard>;
++				nvmem-cell-names = "mac-address";
++				mac-address-increment = <1>;
++			};
++
++			port@9 {
++				reg = <9>;
++				label = "p1";
++				phy-mode = "sgmii";
++				phy-handle = <&switch0phy9>;
++				managed = "in-band-status";
++				nvmem-cells = <&macaddr_hard>;
++				nvmem-cell-names = "mac-address";
++				mac-address-increment = <0>;
++			};
++
++			port@a {
++				reg = <10>;
++				label = "sfp";
++				phy-mode = "10gbase-r";
++				managed = "in-band-status";
++				sfp = <&sfp>;
++				nvmem-cells = <&macaddr_hard>;
++				nvmem-cell-names = "mac-address";
++				mac-address-increment = <8>;
++			};
++		};
++
++		mdio {
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			switch0phy1: switch0phy1@1 {
++				reg = <0x1>;
++			};
++
++			switch0phy2: switch0phy2@2 {
++				reg = <0x2>;
++			};
++
++			switch0phy3: switch0phy3@3 {
++				reg = <0x3>;
++			};
++
++			switch0phy4: switch0phy4@4 {
++				reg = <0x4>;
++			};
++
++			switch0phy5: switch0phy5@5 {
++				reg = <0x5>;
++			};
++
++			switch0phy6: switch0phy6@6 {
++				reg = <0x6>;
++			};
++
++			switch0phy7: switch0phy7@7 {
++				reg = <0x7>;
++			};
++		};
++
++		mdio1 {
++			compatible = "marvell,mv88e6xxx-mdio-external";
++			#address-cells = <1>;
++			#size-cells = <0>;
++
++			switch0phy9: switch0phy9@0 {
++				reg = <0>;
++			};
++		};
++	};
++};
++
++&hard_config {
++	compatible = "nvmem-cells";
++	#address-cells = <1>;
++	#size-cells = <1>;
++
++	macaddr_hard: macaddr@10 {
++		reg = <0x10 0x6>;
++	};
++};
+diff --git a/target/linux/mvebu/image/cortexa72.mk b/target/linux/mvebu/image/cortexa72.mk
+index 17904dc6c3..2d97fec494 100644
+--- a/target/linux/mvebu/image/cortexa72.mk
++++ b/target/linux/mvebu/image/cortexa72.mk
+@@ -52,6 +52,25 @@ define Device/marvell_macchiatobin-singleshot
+ endef
+ TARGET_DEVICES += marvell_macchiatobin-singleshot
+ 
++define Device/mikrotik_rb5009
++  DEVICE_DTS := armada-7040-rb5009
++  DEVICE_DTS_DIR := $(DTS_DIR)/marvell
++  $(call Device/FitImageLzma)
++  DEVICE_VENDOR := MikroTik
++  DEVICE_MODEL := RB5009
++  SOC := armada-7040
++  KERNEL_LOADADDR := 0x22000000
++  KERNEL_INITRAMFS = $$(KERNEL) | aux-loader
++  KERNEL_INITRAMFS_SUFFIX := -fit-uImage.elf
++  BLOCKSIZE := 64k
++  IMAGE_SIZE := 15360k
++  IMAGES := sysupgrade.bin
++  IMAGE/sysupgrade.bin := append-kernel | pad-to $$(BLOCKSIZE) | \
++  	append-rootfs | pad-rootfs | check-size | append-metadata
++  DEVICE_PACKAGES += kmod-i2c-gpio
++endef
++TARGET_DEVICES += mikrotik_rb5009
++
+ define Device/marvell_clearfog-gt-8k
+   $(call Device/Default-arm64)
+   DEVICE_VENDOR := SolidRun
+-- 
+2.43.0
+
+
+From 24f076ac47d63429ff2ba3693410a1fc4bb9c9c0 Mon Sep 17 00:00:00 2001
+From: Serhii Serhieiev <adron@mstnt.com>
+Date: Mon, 14 Feb 2022 06:50:56 +0200
+Subject: [PATCH 04/15] mvebu: RB5009: start to use UBI
+
+Now UBI on a NAND flash drive is used as rootfs.
+The kernel is still located on a NOR flash drive in the form of a FIT image.
+
+Signed-off-by: Serhii Serhieiev <adron@mstnt.com>
+---
+ .../cortexa72/base-files/lib/upgrade/platform.sh     |  3 +--
+ .../arm64/boot/dts/marvell/armada-7040-rb5009.dts    | 12 +++---------
+ target/linux/mvebu/image/cortexa72.mk                |  6 +-----
+ 3 files changed, 5 insertions(+), 16 deletions(-)
+
+diff --git a/target/linux/mvebu/cortexa72/base-files/lib/upgrade/platform.sh b/target/linux/mvebu/cortexa72/base-files/lib/upgrade/platform.sh
+index 539894185c..bb81b0ff26 100755
+--- a/target/linux/mvebu/cortexa72/base-files/lib/upgrade/platform.sh
++++ b/target/linux/mvebu/cortexa72/base-files/lib/upgrade/platform.sh
+@@ -38,8 +38,7 @@ platform_do_upgrade() {
+ 		legacy_sdcard_do_upgrade "$1"
+ 		;;
+ 	mikrotik,rb5009)
+-		PART_NAME=firmware
+-		default_do_upgrade "$1"
++		nand_do_upgrade "$1"
+ 		;;
+ 	*)
+ 		default_do_upgrade "$1"
+diff --git a/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts b/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts
+index 66c74451f0..5535f8ad89 100644
+--- a/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts
++++ b/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts
+@@ -129,8 +129,7 @@
+ 				reg = <0xe0000 0x20000>;
+ 			};
+ 			partition@7 {
+-				compatible = "denx,fit";
+-				label = "firmware";
++				label = "kernel";
+ 				reg = <0x100000 0xf00000>;
+ 			};
+ 			partition@8 {
+@@ -158,13 +157,8 @@
+ 			#size-cells = <1>;
+ 
+ 			partition@0 {
+-				label = "RouterBoard NAND Boot";
+-				reg = <0x0 0x800000>;
+-			};
+-
+-			partition@800000 {
+-				label = "RouterBoard NAND Main";
+-				reg = <0x800000 0x3f800000>;
++				label = "ubi";
++				reg = <0x0 0x40000000>;
+ 			};
+ 		};
+ 	};
+diff --git a/target/linux/mvebu/image/cortexa72.mk b/target/linux/mvebu/image/cortexa72.mk
+index 2d97fec494..f5ab504295 100644
+--- a/target/linux/mvebu/image/cortexa72.mk
++++ b/target/linux/mvebu/image/cortexa72.mk
+@@ -56,17 +56,13 @@ define Device/mikrotik_rb5009
+   DEVICE_DTS := armada-7040-rb5009
+   DEVICE_DTS_DIR := $(DTS_DIR)/marvell
+   $(call Device/FitImageLzma)
++  $(Device/NAND-128K)
+   DEVICE_VENDOR := MikroTik
+   DEVICE_MODEL := RB5009
+   SOC := armada-7040
+   KERNEL_LOADADDR := 0x22000000
+   KERNEL_INITRAMFS = $$(KERNEL) | aux-loader
+   KERNEL_INITRAMFS_SUFFIX := -fit-uImage.elf
+-  BLOCKSIZE := 64k
+-  IMAGE_SIZE := 15360k
+-  IMAGES := sysupgrade.bin
+-  IMAGE/sysupgrade.bin := append-kernel | pad-to $$(BLOCKSIZE) | \
+-  	append-rootfs | pad-rootfs | check-size | append-metadata
+   DEVICE_PACKAGES += kmod-i2c-gpio
+ endef
+ TARGET_DEVICES += mikrotik_rb5009
+-- 
+2.43.0
+
+
+From e44709f0f1dc133cb5c04ce67d4870372f3003a4 Mon Sep 17 00:00:00 2001
+From: Stijn Segers <foss@volatilesystems.org>
+Date: Fri, 12 May 2023 20:10:10 +0200
+Subject: [PATCH 05/15] mvebu: RB5009: update aux-loader.elf
+
+Signed-off-by: Serhii Serhieiev <adron@mstnt.com>
+---
+ target/linux/mvebu/image/bin/aux-loader.elf | Bin 65880 -> 67224 bytes
+ 1 file changed, 0 insertions(+), 0 deletions(-)
+
+diff --git a/target/linux/mvebu/image/bin/aux-loader.elf b/target/linux/mvebu/image/bin/aux-loader.elf
+index a8f19ec360ff92cb2e77a052fcc2502e612bb413..0fa036ef9907bb1ee2efcdca8de2f9c3af4a0c6c 100644
+GIT binary patch
+delta 5669
+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
+F`VYz>t>gdz
+
+delta 4395
+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
+
+-- 
+2.43.0
+
+
+From 53b27dbd17e69cf47fd44c9fb951ede0040739c9 Mon Sep 17 00:00:00 2001
+From: Serhii Serhieiev <adron@mstnt.com>
+Date: Tue, 15 Feb 2022 07:35:09 +0200
+Subject: [PATCH 06/15] mvebu: RB5009: remove sfp port from wan bridge
+
+The presence of two bridges leads to a conflict between vlans
+and Wan ports become inoperative.
+
+Signed-off-by: Serhii Serhieiev <adron@mstnt.com>
+---
+ target/linux/mvebu/cortexa72/base-files/etc/board.d/02_network | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/target/linux/mvebu/cortexa72/base-files/etc/board.d/02_network b/target/linux/mvebu/cortexa72/base-files/etc/board.d/02_network
+index 8f8a9f37f2..bd77be3d41 100644
+--- a/target/linux/mvebu/cortexa72/base-files/etc/board.d/02_network
++++ b/target/linux/mvebu/cortexa72/base-files/etc/board.d/02_network
+@@ -33,7 +33,7 @@ marvell,armada8040-clearfog-gt-8k)
+ 	ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 eth2" "eth0 eth1"
+ 	;;
+ mikrotik,rb5009)
+-	ucidef_set_interfaces_lan_wan "p2 p3 p4 p5 p6 p7 p8" "sfp p1"
++	ucidef_set_interfaces_lan_wan "p2 p3 p4 p5 p6 p7 p8 sfp" "p1"
+ 	;;
+ solidrun,clearfog-pro)
+ 	ucidef_set_interfaces_lan_wan "lan1 lan2 lan3 lan4 lan5 lan6 eth0 eth1" "eth2"
+-- 
+2.43.0
+
+
+From 9d47322a14ea5109bda2f36d747811c37503c4af Mon Sep 17 00:00:00 2001
+From: Stijn Segers <foss@volatilesystems.org>
+Date: Sat, 16 Mar 2024 20:15:20 +0100
+Subject: [PATCH 07/15] mvebu: cortexa72: enable SBSA Watchdog, Mikrotik RB
+ Sysfs and MTD_SPLIT_FIT_FW for 6.6
+
+Signed-off-by: Stijn Segers <foss@volatilesystems.org>
+---
+ target/linux/mvebu/cortexa72/config-6.6 | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/target/linux/mvebu/cortexa72/config-6.6 b/target/linux/mvebu/cortexa72/config-6.6
+index 3c398dcd8f..f0e0bc5176 100644
+--- a/target/linux/mvebu/cortexa72/config-6.6
++++ b/target/linux/mvebu/cortexa72/config-6.6
+@@ -37,6 +37,7 @@ CONFIG_ARM_GIC_V3_ITS=y
+ CONFIG_ARM_GIC_V3_ITS_PCI=y
+ # CONFIG_ARM_PL172_MPMC is not set
+ CONFIG_ARM_PSCI_FW=y
++CONFIG_ARM_SBSA_WATCHDOG=y
+ CONFIG_AUDIT_ARCH_COMPAT_GENERIC=y
+ CONFIG_CC_HAVE_SHADOW_CALL_STACK=y
+ CONFIG_CC_HAVE_STACKPROTECTOR_SYSREG=y
+@@ -58,8 +59,11 @@ CONFIG_MARVELL_10G_PHY=y
+ CONFIG_MFD_CORE=y
+ CONFIG_MFD_IEI_WT61P803_PUZZLE=y
+ CONFIG_MFD_SYSCON=y
++CONFIG_MIKROTIK=y
++CONFIG_MIKROTIK_RB_SYSFS=y
+ CONFIG_MMC_SDHCI_XENON=y
+ CONFIG_MODULES_USE_ELF_RELA=y
++CONFIG_MTD_SPLIT_FIT_FW=y
+ CONFIG_MVEBU_GICP=y
+ CONFIG_MVEBU_ICU=y
+ CONFIG_MVEBU_ODMI=y
+@@ -71,6 +75,7 @@ CONFIG_NEED_SG_DMA_LENGTH=y
+ CONFIG_NVMEM_LAYOUTS=y
+ CONFIG_NVMEM_LAYOUT_ONIE_TLV=y
+ CONFIG_NVMEM_SYSFS=y
++CONFIG_PAHOLE_HAS_LANG_EXCLUDE=y
+ CONFIG_PARTITION_PERCPU=y
+ CONFIG_PCIEAER=y
+ CONFIG_PCIEPORTBUS=y
+-- 
+2.43.0
+
+
+From 22b7da4011befc8292db34bfddedadda7ff89146 Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Mon, 14 Mar 2022 18:55:25 +0100
+Subject: [PATCH 08/15] mvebu: rb5009: add SFP GPIO pins
+
+After finally being able to trace them out using a breakout lets add the
+required SFP GPIO pins.
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ .../files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts b/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts
+index 5535f8ad89..0babac6f08 100644
+--- a/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts
++++ b/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts
+@@ -70,6 +70,11 @@
+ 	sfp: sfp {
+ 		compatible = "sff,sfp";
+ 		i2c-bus = <&sfp_i2c>;
++		mod-def0-gpios = <&cp0_gpio1 11 GPIO_ACTIVE_LOW>;
++		los-gpios = <&cp0_gpio1 2 GPIO_ACTIVE_HIGH>;
++		tx-fault-gpios = <&cp0_gpio1 6 GPIO_ACTIVE_HIGH>;
++		tx-disable-gpios = <&cp0_gpio1 5 GPIO_ACTIVE_HIGH>;
++		rate-select0-gpios = <&cp0_gpio1 3 GPIO_ACTIVE_HIGH>;
+ 	};
+ };
+ 
+-- 
+2.43.0
+
+
+From 95a7d31d9203053aa8f83ebd762263870981cdb7 Mon Sep 17 00:00:00 2001
+From: Stijn Segers <foss@volatilesystems.org>
+Date: Tue, 20 Sep 2022 23:05:43 +0200
+Subject: [PATCH 09/15] mvebu: rb5009: use QCA8081 label for 2.5 GbE port in
+ DTS
+
+The SFP+ interface is clearly labeled as such in the DTS,
+unlike the 2,5 GbE QCA8081. Label it to distinguish it from
+the GbE ports as well. Taken from robimarko's tree at
+https://github.com/robimarko/openwrt/tree/rb5009-5.15.
+
+Signed-off-by: Stijn Segers <foss@volatilesystems.org>
+---
+ .../files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts  | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts b/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts
+index 0babac6f08..0c9742d2d8 100644
+--- a/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts
++++ b/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts
+@@ -301,7 +301,7 @@
+ 				reg = <9>;
+ 				label = "p1";
+ 				phy-mode = "sgmii";
+-				phy-handle = <&switch0phy9>;
++				phy-handle = <&qca8081>;
+ 				managed = "in-band-status";
+ 				nvmem-cells = <&macaddr_hard>;
+ 				nvmem-cell-names = "mac-address";
+@@ -358,7 +358,7 @@
+ 			#address-cells = <1>;
+ 			#size-cells = <0>;
+ 
+-			switch0phy9: switch0phy9@0 {
++			qca8081: qca8081@0 {
+ 				reg = <0>;
+ 			};
+ 		};
+-- 
+2.43.0
+
+
+From 70d9e28a2338c38f9e4411f2de8058641735c85b Mon Sep 17 00:00:00 2001
+From: Stijn Segers <foss@volatilesystems.org>
+Date: Sat, 16 Mar 2024 20:17:44 +0100
+Subject: [PATCH 10/15] mvebu: rb5009: enable QCA8081 PHY support for 6.6
+
+Signed-off-by: Stijn Segers <foss@volatilesystems.org>
+---
+ target/linux/mvebu/cortexa72/config-6.6 | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/target/linux/mvebu/cortexa72/config-6.6 b/target/linux/mvebu/cortexa72/config-6.6
+index f0e0bc5176..a6a6f3c49c 100644
+--- a/target/linux/mvebu/cortexa72/config-6.6
++++ b/target/linux/mvebu/cortexa72/config-6.6
+@@ -94,6 +94,7 @@ CONFIG_PINCTRL_ARMADA_AP806=y
+ CONFIG_PINCTRL_ARMADA_CP110=y
+ CONFIG_POSIX_CPU_TIMERS_TASK_WORK=y
+ CONFIG_POWER_SUPPLY=y
++CONFIG_QCA808X_PHY=y
+ CONFIG_QUEUED_RWLOCKS=y
+ CONFIG_QUEUED_SPINLOCKS=y
+ CONFIG_RAS=y
+-- 
+2.43.0
+
+
+From f21e5850d420cf68cd48ca6f0ec00fb99c207fa9 Mon Sep 17 00:00:00 2001
+From: Stijn Segers <foss@volatilesystems.org>
+Date: Sun, 17 Sep 2023 22:43:48 +0200
+Subject: [PATCH 11/15] mvebu: add Amethyst specific SMI setup for 6.6
+
+Amethyst switches require different external SMI GPIO setup then other
+switches, so provide it since RB5009 uses the external SMI bus.
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+[Adapted for 6.1]
+Signed-off-by: Stijn Segers <foss@volatilesystems.org>
+---
+ ...x-add-Amethyst-specific-SMI-GPIO-fun.patch | 98 +++++++++++++++++++
+ 1 file changed, 98 insertions(+)
+ create mode 100644 target/linux/mvebu/patches-6.6/706-net-dsa-mv88e6xxx-add-Amethyst-specific-SMI-GPIO-fun.patch
+
+diff --git a/target/linux/mvebu/patches-6.6/706-net-dsa-mv88e6xxx-add-Amethyst-specific-SMI-GPIO-fun.patch b/target/linux/mvebu/patches-6.6/706-net-dsa-mv88e6xxx-add-Amethyst-specific-SMI-GPIO-fun.patch
+new file mode 100644
+index 0000000000..1a6b59e565
+--- /dev/null
++++ b/target/linux/mvebu/patches-6.6/706-net-dsa-mv88e6xxx-add-Amethyst-specific-SMI-GPIO-fun.patch
+@@ -0,0 +1,98 @@
++From 40aa82107e7b1e7f20cbf6e644005c0c606f9f79 Mon Sep 17 00:00:00 2001
++From: Robert Marko <robimarko@gmail.com>
++Date: Fri, 14 Jan 2022 15:17:37 +0100
++Subject: [PATCH] net: dsa: mv88e6xxx: add Amethyst specific SMI GPIO function
++
++The existing mv88e6xxx_g2_scratch_gpio_set_smi() cannot be used on the
++88E6393X as it requires certain P0_MODE, it also checks the CPU mode
++as it impacts the bit setting value.
++
++This is all irrelevant for Amethyst (MV88E6191X/6193X/6393X) as only
++the default value of the SMI_PHY Config bit is set to CPU_MGD bootstrap
++pin value but it can be changed without restrictions so that GPIO pins
++9 and 10 are used as SMI pins.
++
++So, introduce Amethyst specific function and call that if the Amethyst
++family wants to setup the external PHY.
++
++Signed-off-by: Robert Marko <robimarko@gmail.com>
++---
++ drivers/net/dsa/mv88e6xxx/chip.c            |  5 +++-
++ drivers/net/dsa/mv88e6xxx/global2.h         |  2 ++
++ drivers/net/dsa/mv88e6xxx/global2_scratch.c | 31 +++++++++++++++++++++
++ 3 files changed, 37 insertions(+), 1 deletion(-)
++
++diff --git a/drivers/net/dsa/mv88e6xxx/chip.c b/drivers/net/dsa/mv88e6xxx/chip.c
++index 43d126628610..b3803101d612 100644
++--- a/drivers/net/dsa/mv88e6xxx/chip.c
+++++ b/drivers/net/dsa/mv88e6xxx/chip.c
++@@ -3409,7 +3409,10 @@ static int mv88e6xxx_mdio_register(struct mv88e6xxx_chip *chip,
++ 
++ 	if (external) {
++ 		mv88e6xxx_reg_lock(chip);
++-		err = mv88e6xxx_g2_scratch_gpio_set_smi(chip, true);
+++		if (chip->info->family == MV88E6XXX_FAMILY_6393)
+++			err = mv88e6393x_g2_scratch_gpio_set_smi(chip, true);
+++		else
+++			err = mv88e6xxx_g2_scratch_gpio_set_smi(chip, true);
++ 		mv88e6xxx_reg_unlock(chip);
++ 
++ 		if (err)
++diff --git a/drivers/net/dsa/mv88e6xxx/global2.h b/drivers/net/dsa/mv88e6xxx/global2.h
++index f3e27573a386..e0649f21f28e 100644
++--- a/drivers/net/dsa/mv88e6xxx/global2.h
+++++ b/drivers/net/dsa/mv88e6xxx/global2.h
++@@ -370,6 +370,8 @@ extern const struct mv88e6xxx_gpio_ops mv88e6352_gpio_ops;
++ 
++ int mv88e6xxx_g2_scratch_gpio_set_smi(struct mv88e6xxx_chip *chip,
++ 				      bool external);
+++int mv88e6393x_g2_scratch_gpio_set_smi(struct mv88e6xxx_chip *chip,
+++				       bool external);
++ int mv88e6352_g2_scratch_port_has_serdes(struct mv88e6xxx_chip *chip, int port);
++ int mv88e6xxx_g2_atu_stats_set(struct mv88e6xxx_chip *chip, u16 kind, u16 bin);
++ 
++diff --git a/drivers/net/dsa/mv88e6xxx/global2_scratch.c b/drivers/net/dsa/mv88e6xxx/global2_scratch.c
++index eda710062933..dc3f4645fa52 100644
++--- a/drivers/net/dsa/mv88e6xxx/global2_scratch.c
+++++ b/drivers/net/dsa/mv88e6xxx/global2_scratch.c
++@@ -289,3 +289,34 @@ int mv88e6xxx_g2_scratch_gpio_set_smi(struct mv88e6xxx_chip *chip,
++ 
++ 	return mv88e6xxx_g2_scratch_write(chip, misc_cfg, val);
++ }
+++
+++/**
+++ * mv88e6393x_g2_scratch_gpio_set_smi - set gpio muxing for external smi
+++ * @chip: chip private data
+++ * @external: set mux for external smi, or free for gpio usage
+++ *
+++ * MV88E6191X/6193X/6393X GPIO pins 9 and 10 can be configured as an
+++ * external SMI interface or as regular GPIO-s.
+++ *
+++ * They however have a different register layout then the existing
+++ * function.
+++ */
+++
+++int mv88e6393x_g2_scratch_gpio_set_smi(struct mv88e6xxx_chip *chip,
+++				       bool external)
+++{
+++	int misc_cfg = MV88E6352_G2_SCRATCH_MISC_CFG;
+++	int err;
+++	u8 val;
+++
+++	err = mv88e6xxx_g2_scratch_read(chip, misc_cfg, &val);
+++	if (err)
+++		return err;
+++
+++	if (external)
+++		val &= ~MV88E6352_G2_SCRATCH_MISC_CFG_NORMALSMI;
+++	else
+++		val |= MV88E6352_G2_SCRATCH_MISC_CFG_NORMALSMI;
+++
+++	return mv88e6xxx_g2_scratch_write(chip, misc_cfg, val);
+++}
++ 
++ /**
++   * mv88e6352_g2_scratch_port_has_serdes - indicate if a port can have
++-- 
++2.34.1
++
+-- 
+2.43.0
+
+
+From 981c5722cba2ad7181e9cf504fef54625496fe4e Mon Sep 17 00:00:00 2001
+From: Stijn Segers <foss@volatilesystems.org>
+Date: Mon, 18 Sep 2023 13:47:26 +0200
+Subject: [PATCH 12/15] mvebu: rb5009: set PHY mode and management property for
+ port@0
+
+Suggested by robimarko - see https://forum.openwrt.org/t/104391/908
+
+Signed-off-by: Stijn Segers <foss@volatilesystems.org>
+---
+ .../files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts    | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts b/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts
+index 0c9742d2d8..1b1e9e3418 100644
+--- a/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts
++++ b/target/linux/mvebu/files/arch/arm64/boot/dts/marvell/armada-7040-rb5009.dts
+@@ -232,6 +232,8 @@
+ 				reg = <0>;
+ 				label = "cpu";
+ 				ethernet = <&cp0_eth0>;
++				phy-mode = "10gbase-r";
++				managed = "in-band-status";
+ 			};
+ 
+ 			port@1 {
+-- 
+2.43.0
+
+
+From e7605c2dd5e6fb6574d736620e3dde3b39b081f1 Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Sun, 18 Feb 2024 22:14:19 +0100
+Subject: [PATCH 13/15] mvebu: a72: refresh config
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ target/linux/mvebu/cortexa72/config-6.6 | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/target/linux/mvebu/cortexa72/config-6.6 b/target/linux/mvebu/cortexa72/config-6.6
+index a6a6f3c49c..857d21fbf3 100644
+--- a/target/linux/mvebu/cortexa72/config-6.6
++++ b/target/linux/mvebu/cortexa72/config-6.6
+@@ -1,4 +1,5 @@
+ CONFIG_64BIT=y
++# CONFIG_AIR_EN8811H_PHY is not set
+ CONFIG_AQUANTIA_PHY=y
+ CONFIG_ARCH_BINFMT_ELF_EXTRA_PHDRS=y
+ CONFIG_ARCH_CORRECT_STACKTRACE_ON_KRETPROBE=y
+@@ -95,6 +96,7 @@ CONFIG_PINCTRL_ARMADA_CP110=y
+ CONFIG_POSIX_CPU_TIMERS_TASK_WORK=y
+ CONFIG_POWER_SUPPLY=y
+ CONFIG_QCA808X_PHY=y
++CONFIG_QCOM_NET_PHYLIB=y
+ CONFIG_QUEUED_RWLOCKS=y
+ CONFIG_QUEUED_SPINLOCKS=y
+ CONFIG_RAS=y
+-- 
+2.43.0
+
+
+From da8b5d6a286ec0e03f202a89dcca58d7ec84ffde Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Tue, 27 Feb 2024 19:07:20 +0100
+Subject: [PATCH 14/15] mvebu: refresh Amethyst patch
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+---
+ ...x-add-Amethyst-specific-SMI-GPIO-fun.patch | 22 +++++--------------
+ 1 file changed, 5 insertions(+), 17 deletions(-)
+
+diff --git a/target/linux/mvebu/patches-6.6/706-net-dsa-mv88e6xxx-add-Amethyst-specific-SMI-GPIO-fun.patch b/target/linux/mvebu/patches-6.6/706-net-dsa-mv88e6xxx-add-Amethyst-specific-SMI-GPIO-fun.patch
+index 1a6b59e565..0b3d9b5f3d 100644
+--- a/target/linux/mvebu/patches-6.6/706-net-dsa-mv88e6xxx-add-Amethyst-specific-SMI-GPIO-fun.patch
++++ b/target/linux/mvebu/patches-6.6/706-net-dsa-mv88e6xxx-add-Amethyst-specific-SMI-GPIO-fun.patch
+@@ -22,11 +22,9 @@ Signed-off-by: Robert Marko <robimarko@gmail.com>
+  drivers/net/dsa/mv88e6xxx/global2_scratch.c | 31 +++++++++++++++++++++
+  3 files changed, 37 insertions(+), 1 deletion(-)
+ 
+-diff --git a/drivers/net/dsa/mv88e6xxx/chip.c b/drivers/net/dsa/mv88e6xxx/chip.c
+-index 43d126628610..b3803101d612 100644
+ --- a/drivers/net/dsa/mv88e6xxx/chip.c
+ +++ b/drivers/net/dsa/mv88e6xxx/chip.c
+-@@ -3409,7 +3409,10 @@ static int mv88e6xxx_mdio_register(struct mv88e6xxx_chip *chip,
++@@ -3950,7 +3950,10 @@ static int mv88e6xxx_mdio_register(struc
+  
+  	if (external) {
+  		mv88e6xxx_reg_lock(chip);
+@@ -38,11 +36,9 @@ index 43d126628610..b3803101d612 100644
+  		mv88e6xxx_reg_unlock(chip);
+  
+  		if (err)
+-diff --git a/drivers/net/dsa/mv88e6xxx/global2.h b/drivers/net/dsa/mv88e6xxx/global2.h
+-index f3e27573a386..e0649f21f28e 100644
+ --- a/drivers/net/dsa/mv88e6xxx/global2.h
+ +++ b/drivers/net/dsa/mv88e6xxx/global2.h
+-@@ -370,6 +370,8 @@ extern const struct mv88e6xxx_gpio_ops mv88e6352_gpio_ops;
++@@ -374,6 +374,8 @@ extern const struct mv88e6xxx_gpio_ops m
+  
+  int mv88e6xxx_g2_scratch_gpio_set_smi(struct mv88e6xxx_chip *chip,
+  				      bool external);
+@@ -50,14 +46,12 @@ index f3e27573a386..e0649f21f28e 100644
+ +				       bool external);
+  int mv88e6352_g2_scratch_port_has_serdes(struct mv88e6xxx_chip *chip, int port);
+  int mv88e6xxx_g2_atu_stats_set(struct mv88e6xxx_chip *chip, u16 kind, u16 bin);
+- 
+-diff --git a/drivers/net/dsa/mv88e6xxx/global2_scratch.c b/drivers/net/dsa/mv88e6xxx/global2_scratch.c
+-index eda710062933..dc3f4645fa52 100644
++ int mv88e6xxx_g2_atu_stats_get(struct mv88e6xxx_chip *chip, u16 *stats);
+ --- a/drivers/net/dsa/mv88e6xxx/global2_scratch.c
+ +++ b/drivers/net/dsa/mv88e6xxx/global2_scratch.c
+-@@ -289,3 +289,34 @@ int mv88e6xxx_g2_scratch_gpio_set_smi(struct mv88e6xxx_chip *chip,
++@@ -317,3 +317,34 @@ int mv88e6352_g2_scratch_port_has_serdes
+  
+- 	return mv88e6xxx_g2_scratch_write(chip, misc_cfg, val);
++ 	return port == p;
+  }
+ +
+ +/**
+@@ -90,9 +84,3 @@ index eda710062933..dc3f4645fa52 100644
+ +
+ +	return mv88e6xxx_g2_scratch_write(chip, misc_cfg, val);
+ +}
+- 
+- /**
+-   * mv88e6352_g2_scratch_port_has_serdes - indicate if a port can have
+--- 
+-2.34.1
+-
+-- 
+2.43.0
+
+
+From ffe926ed08b5657cfaf44a4ad1b88d2f89ca56e6 Mon Sep 17 00:00:00 2001
+From: Robert Marko <robimarko@gmail.com>
+Date: Tue, 27 Feb 2024 19:07:42 +0100
+Subject: [PATCH 15/15] generic: 6.6: add pending QCA808x possible interfaces
+ fix
+
+QCA808x does not currently fill in the possible_interfaces.
+
+This leads to Phylink not being aware that it supports 2500Base-X as well
+so in cases where it is connected to a DSA switch like MV88E6393 it will
+limit that port to phy-mode set in the DTS.
+
+That means that if SGMII is used you are limited to 1G only while if
+2500Base-X was set you are limited to 2.5G only.
+
+Populating the possible_interfaces fixes this.
+
+This also includes a backport of the Phylink PHY validation series from
+kernel 6.8 that allows the use of possible_interfaces.
+
+Signed-off-by: Robert Marko <robimarko@gmail.com>
+[Updated for 6.6]
+Signed-off-by: Stijn Segers <foss@volatilesystems.org>
+---
+ ...v6.8-net-phy-add-possible-interfaces.patch |  60 ++++++++
+ ...6.8-net-phylink-use-for_each_set_bit.patch |  46 +++++++
+ ...k-split-out-per-interface-validation.patch |  76 ++++++++++
+ ...k-pass-PHY-into-phylink_validate_one.patch |  47 +++++++
+ ...-pass-PHY-into-phylink_validate_mask.patch |  58 ++++++++
+ ...t-out-PHY-validation-from-phylink_br.patch |  95 +++++++++++++
+ ...the-PHY-s-possible_interfaces-if-pop.patch | 130 ++++++++++++++++++
+ ...808x-add-helper-for-checking-for-1G-.patch |  52 +++++++
+ ...-qca808x-fill-in-possible_interfaces.patch |  43 ++++++
+ 9 files changed, 607 insertions(+)
+ create mode 100644 target/linux/generic/backport-6.6/895-01-v6.8-net-phy-add-possible-interfaces.patch
+ create mode 100644 target/linux/generic/backport-6.6/895-02-v6.8-net-phylink-use-for_each_set_bit.patch
+ create mode 100644 target/linux/generic/backport-6.6/895-03-v6.8-net-phylink-split-out-per-interface-validation.patch
+ create mode 100644 target/linux/generic/backport-6.6/895-04-v6.8-net-phylink-pass-PHY-into-phylink_validate_one.patch
+ create mode 100644 target/linux/generic/backport-6.6/895-05-v6.8-net-phylink-pass-PHY-into-phylink_validate_mask.patch
+ create mode 100644 target/linux/generic/backport-6.6/895-06-v6.8-net-phylink-split-out-PHY-validation-from-phylink_br.patch
+ create mode 100644 target/linux/generic/backport-6.6/895-07-v6.8-net-phylink-use-the-PHY-s-possible_interfaces-if-pop.patch
+ create mode 100644 target/linux/generic/pending-6.6/781-01-net-phy-qcom-qca808x-add-helper-for-checking-for-1G-.patch
+ create mode 100644 target/linux/generic/pending-6.6/781-02-net-phy-qcom-qca808x-fill-in-possible_interfaces.patch
+
+diff --git a/target/linux/generic/backport-6.6/895-01-v6.8-net-phy-add-possible-interfaces.patch b/target/linux/generic/backport-6.6/895-01-v6.8-net-phy-add-possible-interfaces.patch
+new file mode 100644
+index 0000000000..3a9b856a20
+--- /dev/null
++++ b/target/linux/generic/backport-6.6/895-01-v6.8-net-phy-add-possible-interfaces.patch
+@@ -0,0 +1,60 @@
++From 1a7aa058bc92f0edae7a0d1ef1a7b05aec0c643a Mon Sep 17 00:00:00 2001
++From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
++Date: Fri, 24 Nov 2023 12:27:52 +0000
++Subject: [PATCH 1/7] net: phy: add possible interfaces
++
++Add a possible_interfaces member to struct phy_device to indicate which
++interfaces a clause 45 PHY may switch between depending on the media.
++This must be populated by the PHY driver by the time the .config_init()
++method completes according to the PHYs host-side configuration.
++
++For example, the Marvell 88x3310 PHY can switch between 10GBASE-R,
++5GBASE-R, 2500BASE-X, and SGMII on the host side depending on the media
++side speed, so all these interface modes are set in the
++possible_interfaces member.
++
++This allows phylib users (such as phylink) to know in advance which
++interface modes to expect, which allows them to appropriately restrict
++the advertised link modes according to the capabilities of other parts
++of the link.
++
++Tested-by: Luo Jie <quic_luoj@quicinc.com>
++Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
++Reviewed-by: Andrew Lunn <andrew@lunn.ch>
++Link: https://lore.kernel.org/r/E1r6VHk-00DDLN-I7@rmk-PC.armlinux.org.uk
++Signed-off-by: Jakub Kicinski <kuba@kernel.org>
++---
++ drivers/net/phy/phy_device.c | 2 ++
++ include/linux/phy.h          | 3 +++
++ 2 files changed, 5 insertions(+)
++
++--- a/drivers/net/phy/phy_device.c
+++++ b/drivers/net/phy/phy_device.c
++@@ -1215,6 +1215,8 @@ int phy_init_hw(struct phy_device *phyde
++ 	if (ret < 0)
++ 		return ret;
++ 
+++	phy_interface_zero(phydev->possible_interfaces);
+++
++ 	if (phydev->drv->config_init) {
++ 		ret = phydev->drv->config_init(phydev);
++ 		if (ret < 0)
++--- a/include/linux/phy.h
+++++ b/include/linux/phy.h
++@@ -600,6 +600,8 @@ struct macsec_ops;
++  * @irq_rerun: Flag indicating interrupts occurred while PHY was suspended,
++  *             requiring a rerun of the interrupt handler after resume
++  * @interface: enum phy_interface_t value
+++ * @possible_interfaces: bitmap if interface modes that the attached PHY
+++ *			 will switch between depending on media speed.
++  * @skb: Netlink message for cable diagnostics
++  * @nest: Netlink nest used for cable diagnostics
++  * @ehdr: nNtlink header for cable diagnostics
++@@ -665,6 +667,7 @@ struct phy_device {
++ 	u32 dev_flags;
++ 
++ 	phy_interface_t interface;
+++	DECLARE_PHY_INTERFACE_MASK(possible_interfaces);
++ 
++ 	/*
++ 	 * forced speed & duplex (no autoneg)
+diff --git a/target/linux/generic/backport-6.6/895-02-v6.8-net-phylink-use-for_each_set_bit.patch b/target/linux/generic/backport-6.6/895-02-v6.8-net-phylink-use-for_each_set_bit.patch
+new file mode 100644
+index 0000000000..155ec1c2d9
+--- /dev/null
++++ b/target/linux/generic/backport-6.6/895-02-v6.8-net-phylink-use-for_each_set_bit.patch
+@@ -0,0 +1,46 @@
++From 85631f5b33f2acce7d42dec1d0a062ab40de95b8 Mon Sep 17 00:00:00 2001
++From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
++Date: Sun, 19 Nov 2023 21:07:43 +0000
++Subject: [PATCH 2/7] net: phylink: use for_each_set_bit()
++
++Use for_each_set_bit() rather than open coding the for() test_bit()
++loop.
++
++Reviewed-by: Andrew Lunn <andrew@lunn.ch>
++Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
++Reviewed-by: Wojciech Drewek <wojciech.drewek@intel.com>
++Link: https://lore.kernel.org/r/E1r4p15-00Cpxe-C7@rmk-PC.armlinux.org.uk
++Signed-off-by: Paolo Abeni <pabeni@redhat.com>
++---
++ drivers/net/phy/phylink.c | 18 ++++++++----------
++ 1 file changed, 8 insertions(+), 10 deletions(-)
++
++--- a/drivers/net/phy/phylink.c
+++++ b/drivers/net/phy/phylink.c
++@@ -690,18 +690,16 @@ static int phylink_validate_mask(struct
++ 	__ETHTOOL_DECLARE_LINK_MODE_MASK(all_s) = { 0, };
++ 	__ETHTOOL_DECLARE_LINK_MODE_MASK(s);
++ 	struct phylink_link_state t;
++-	int intf;
+++	int interface;
++ 
++-	for (intf = 0; intf < PHY_INTERFACE_MODE_MAX; intf++) {
++-		if (test_bit(intf, interfaces)) {
++-			linkmode_copy(s, supported);
+++	for_each_set_bit(interface, interfaces, PHY_INTERFACE_MODE_MAX) {
+++		linkmode_copy(s, supported);
++ 
++-			t = *state;
++-			t.interface = intf;
++-			if (!phylink_validate_mac_and_pcs(pl, s, &t)) {
++-				linkmode_or(all_s, all_s, s);
++-				linkmode_or(all_adv, all_adv, t.advertising);
++-			}
+++		t = *state;
+++		t.interface = interface;
+++		if (!phylink_validate_mac_and_pcs(pl, s, &t)) {
+++			linkmode_or(all_s, all_s, s);
+++			linkmode_or(all_adv, all_adv, t.advertising);
++ 		}
++ 	}
++ 
+diff --git a/target/linux/generic/backport-6.6/895-03-v6.8-net-phylink-split-out-per-interface-validation.patch b/target/linux/generic/backport-6.6/895-03-v6.8-net-phylink-split-out-per-interface-validation.patch
+new file mode 100644
+index 0000000000..163cb953f7
+--- /dev/null
++++ b/target/linux/generic/backport-6.6/895-03-v6.8-net-phylink-split-out-per-interface-validation.patch
+@@ -0,0 +1,76 @@
++From d4788b4383ce5caeb4e68818357c81a02117a3f9 Mon Sep 17 00:00:00 2001
++From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
++Date: Fri, 24 Nov 2023 12:28:19 +0000
++Subject: [PATCH 3/7] net: phylink: split out per-interface validation
++
++Split out the internals of phylink_validate_mask() to make the code
++easier to read.
++
++Tested-by: Luo Jie <quic_luoj@quicinc.com>
++Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
++Reviewed-by: Andrew Lunn <andrew@lunn.ch>
++Link: https://lore.kernel.org/r/E1r6VIB-00DDLr-7g@rmk-PC.armlinux.org.uk
++Signed-off-by: Jakub Kicinski <kuba@kernel.org>
++---
++ drivers/net/phy/phylink.c | 42 ++++++++++++++++++++++++++++-----------
++ 1 file changed, 30 insertions(+), 12 deletions(-)
++
++--- a/drivers/net/phy/phylink.c
+++++ b/drivers/net/phy/phylink.c
++@@ -682,26 +682,44 @@ static int phylink_validate_mac_and_pcs(
++ 	return phylink_is_empty_linkmode(supported) ? -EINVAL : 0;
++ }
++ 
+++static void phylink_validate_one(struct phylink *pl,
+++				 const unsigned long *supported,
+++				 const struct phylink_link_state *state,
+++				 phy_interface_t interface,
+++				 unsigned long *accum_supported,
+++				 unsigned long *accum_advertising)
+++{
+++	__ETHTOOL_DECLARE_LINK_MODE_MASK(tmp_supported);
+++	struct phylink_link_state tmp_state;
+++
+++	linkmode_copy(tmp_supported, supported);
+++
+++	tmp_state = *state;
+++	tmp_state.interface = interface;
+++
+++	if (!phylink_validate_mac_and_pcs(pl, tmp_supported, &tmp_state)) {
+++		phylink_dbg(pl, " interface %u (%s) rate match %s supports %*pbl\n",
+++			    interface, phy_modes(interface),
+++			    phy_rate_matching_to_str(tmp_state.rate_matching),
+++			    __ETHTOOL_LINK_MODE_MASK_NBITS, tmp_supported);
+++
+++		linkmode_or(accum_supported, accum_supported, tmp_supported);
+++		linkmode_or(accum_advertising, accum_advertising,
+++			    tmp_state.advertising);
+++	}
+++}
+++
++ static int phylink_validate_mask(struct phylink *pl, unsigned long *supported,
++ 				 struct phylink_link_state *state,
++ 				 const unsigned long *interfaces)
++ {
++ 	__ETHTOOL_DECLARE_LINK_MODE_MASK(all_adv) = { 0, };
++ 	__ETHTOOL_DECLARE_LINK_MODE_MASK(all_s) = { 0, };
++-	__ETHTOOL_DECLARE_LINK_MODE_MASK(s);
++-	struct phylink_link_state t;
++ 	int interface;
++ 
++-	for_each_set_bit(interface, interfaces, PHY_INTERFACE_MODE_MAX) {
++-		linkmode_copy(s, supported);
++-
++-		t = *state;
++-		t.interface = interface;
++-		if (!phylink_validate_mac_and_pcs(pl, s, &t)) {
++-			linkmode_or(all_s, all_s, s);
++-			linkmode_or(all_adv, all_adv, t.advertising);
++-		}
++-	}
+++	for_each_set_bit(interface, interfaces, PHY_INTERFACE_MODE_MAX)
+++		phylink_validate_one(pl, supported, state, interface,
+++				     all_s, all_adv);
++ 
++ 	linkmode_copy(supported, all_s);
++ 	linkmode_copy(state->advertising, all_adv);
+diff --git a/target/linux/generic/backport-6.6/895-04-v6.8-net-phylink-pass-PHY-into-phylink_validate_one.patch b/target/linux/generic/backport-6.6/895-04-v6.8-net-phylink-pass-PHY-into-phylink_validate_one.patch
+new file mode 100644
+index 0000000000..5012020676
+--- /dev/null
++++ b/target/linux/generic/backport-6.6/895-04-v6.8-net-phylink-pass-PHY-into-phylink_validate_one.patch
+@@ -0,0 +1,47 @@
++From ce7273c31fadb3143fc80c96a72a42adc19c2757 Mon Sep 17 00:00:00 2001
++From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
++Date: Fri, 24 Nov 2023 12:28:24 +0000
++Subject: [PATCH 4/7] net: phylink: pass PHY into phylink_validate_one()
++
++Pass the phy (if any) into phylink_validate_one() so that we can
++validate each interface with its rate matching setting.
++
++Tested-by: Luo Jie <quic_luoj@quicinc.com>
++Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
++Reviewed-by: Andrew Lunn <andrew@lunn.ch>
++Link: https://lore.kernel.org/r/E1r6VIG-00DDLx-Cb@rmk-PC.armlinux.org.uk
++Signed-off-by: Jakub Kicinski <kuba@kernel.org>
++---
++ drivers/net/phy/phylink.c | 7 +++++--
++ 1 file changed, 5 insertions(+), 2 deletions(-)
++
++--- a/drivers/net/phy/phylink.c
+++++ b/drivers/net/phy/phylink.c
++@@ -682,7 +682,7 @@ static int phylink_validate_mac_and_pcs(
++ 	return phylink_is_empty_linkmode(supported) ? -EINVAL : 0;
++ }
++ 
++-static void phylink_validate_one(struct phylink *pl,
+++static void phylink_validate_one(struct phylink *pl, struct phy_device *phy,
++ 				 const unsigned long *supported,
++ 				 const struct phylink_link_state *state,
++ 				 phy_interface_t interface,
++@@ -697,6 +697,9 @@ static void phylink_validate_one(struct
++ 	tmp_state = *state;
++ 	tmp_state.interface = interface;
++ 
+++	if (phy)
+++		tmp_state.rate_matching = phy_get_rate_matching(phy, interface);
+++
++ 	if (!phylink_validate_mac_and_pcs(pl, tmp_supported, &tmp_state)) {
++ 		phylink_dbg(pl, " interface %u (%s) rate match %s supports %*pbl\n",
++ 			    interface, phy_modes(interface),
++@@ -718,7 +721,7 @@ static int phylink_validate_mask(struct
++ 	int interface;
++ 
++ 	for_each_set_bit(interface, interfaces, PHY_INTERFACE_MODE_MAX)
++-		phylink_validate_one(pl, supported, state, interface,
+++		phylink_validate_one(pl, NULL, supported, state, interface,
++ 				     all_s, all_adv);
++ 
++ 	linkmode_copy(supported, all_s);
+diff --git a/target/linux/generic/backport-6.6/895-05-v6.8-net-phylink-pass-PHY-into-phylink_validate_mask.patch b/target/linux/generic/backport-6.6/895-05-v6.8-net-phylink-pass-PHY-into-phylink_validate_mask.patch
+new file mode 100644
+index 0000000000..997c74346c
+--- /dev/null
++++ b/target/linux/generic/backport-6.6/895-05-v6.8-net-phylink-pass-PHY-into-phylink_validate_mask.patch
+@@ -0,0 +1,58 @@
++From c6fec66d3cd76d797f70b30f1511bed10ba45a96 Mon Sep 17 00:00:00 2001
++From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
++Date: Fri, 24 Nov 2023 12:28:29 +0000
++Subject: [PATCH 5/7] net: phylink: pass PHY into phylink_validate_mask()
++
++Pass the phy (if any) into phylink_validate_mask() so that we can
++validate each interface with its rate matching setting.
++
++Tested-by: Luo Jie <quic_luoj@quicinc.com>
++Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
++Reviewed-by: Andrew Lunn <andrew@lunn.ch>
++Link: https://lore.kernel.org/r/E1r6VIL-00DDM3-HJ@rmk-PC.armlinux.org.uk
++Signed-off-by: Jakub Kicinski <kuba@kernel.org>
++---
++ drivers/net/phy/phylink.c | 11 +++++++----
++ 1 file changed, 7 insertions(+), 4 deletions(-)
++
++--- a/drivers/net/phy/phylink.c
+++++ b/drivers/net/phy/phylink.c
++@@ -712,7 +712,8 @@ static void phylink_validate_one(struct
++ 	}
++ }
++ 
++-static int phylink_validate_mask(struct phylink *pl, unsigned long *supported,
+++static int phylink_validate_mask(struct phylink *pl, struct phy_device *phy,
+++				 unsigned long *supported,
++ 				 struct phylink_link_state *state,
++ 				 const unsigned long *interfaces)
++ {
++@@ -721,7 +722,7 @@ static int phylink_validate_mask(struct
++ 	int interface;
++ 
++ 	for_each_set_bit(interface, interfaces, PHY_INTERFACE_MODE_MAX)
++-		phylink_validate_one(pl, NULL, supported, state, interface,
+++		phylink_validate_one(pl, phy, supported, state, interface,
++ 				     all_s, all_adv);
++ 
++ 	linkmode_copy(supported, all_s);
++@@ -736,7 +737,8 @@ static int phylink_validate(struct phyli
++ 	const unsigned long *interfaces = pl->config->supported_interfaces;
++ 
++ 	if (state->interface == PHY_INTERFACE_MODE_NA)
++-		return phylink_validate_mask(pl, supported, state, interfaces);
+++		return phylink_validate_mask(pl, NULL, supported, state,
+++					     interfaces);
++ 
++ 	if (!test_bit(state->interface, interfaces))
++ 		return -EINVAL;
++@@ -3132,7 +3134,8 @@ static int phylink_sfp_config_optical(st
++ 	/* For all the interfaces that are supported, reduce the sfp_support
++ 	 * mask to only those link modes that can be supported.
++ 	 */
++-	ret = phylink_validate_mask(pl, pl->sfp_support, &config, interfaces);
+++	ret = phylink_validate_mask(pl, NULL, pl->sfp_support, &config,
+++				    interfaces);
++ 	if (ret) {
++ 		phylink_err(pl, "unsupported SFP module: validation with support %*pb failed\n",
++ 			    __ETHTOOL_LINK_MODE_MASK_NBITS, support);
+diff --git a/target/linux/generic/backport-6.6/895-06-v6.8-net-phylink-split-out-PHY-validation-from-phylink_br.patch b/target/linux/generic/backport-6.6/895-06-v6.8-net-phylink-split-out-PHY-validation-from-phylink_br.patch
+new file mode 100644
+index 0000000000..d3d24c58fb
+--- /dev/null
++++ b/target/linux/generic/backport-6.6/895-06-v6.8-net-phylink-split-out-PHY-validation-from-phylink_br.patch
+@@ -0,0 +1,95 @@
++From ee0e0ddb910e7e989b65a19d72b6435baa641fc7 Mon Sep 17 00:00:00 2001
++From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
++Date: Fri, 24 Nov 2023 12:28:34 +0000
++Subject: [PATCH 6/7] net: phylink: split out PHY validation from
++ phylink_bringup_phy()
++
++When bringing up a PHY, we need to work out which ethtool link modes it
++should support and advertise. Clause 22 PHYs operate in a single
++interface mode, which can be easily dealt with. However, clause 45 PHYs
++tend to switch interface mode depending on the media. We need more
++flexible validation at this point, so this patch splits out that code
++in preparation to changing it.
++
++Tested-by: Luo Jie <quic_luoj@quicinc.com>
++Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
++Reviewed-by: Andrew Lunn <andrew@lunn.ch>
++Link: https://lore.kernel.org/r/E1r6VIQ-00DDM9-LK@rmk-PC.armlinux.org.uk
++Signed-off-by: Jakub Kicinski <kuba@kernel.org>
++---
++ drivers/net/phy/phylink.c | 56 ++++++++++++++++++++++-----------------
++ 1 file changed, 31 insertions(+), 25 deletions(-)
++
++--- a/drivers/net/phy/phylink.c
+++++ b/drivers/net/phy/phylink.c
++@@ -1738,6 +1738,35 @@ static void phylink_phy_change(struct ph
++ 		    phylink_pause_to_str(pl->phy_state.pause));
++ }
++ 
+++static int phylink_validate_phy(struct phylink *pl, struct phy_device *phy,
+++				unsigned long *supported,
+++				struct phylink_link_state *state)
+++{
+++	/* Check whether we would use rate matching for the proposed interface
+++	 * mode.
+++	 */
+++	state->rate_matching = phy_get_rate_matching(phy, state->interface);
+++
+++	/* Clause 45 PHYs may switch their Serdes lane between, e.g. 10GBASE-R,
+++	 * 5GBASE-R, 2500BASE-X and SGMII if they are not using rate matching.
+++	 * For some interface modes (e.g. RXAUI, XAUI and USXGMII) switching
+++	 * their Serdes is either unnecessary or not reasonable.
+++	 *
+++	 * For these which switch interface modes, we really need to know which
+++	 * interface modes the PHY supports to properly work out which ethtool
+++	 * linkmodes can be supported. For now, as a work-around, we validate
+++	 * against all interface modes, which may lead to more ethtool link
+++	 * modes being advertised than are actually supported.
+++	 */
+++	if (phy->is_c45 && state->rate_matching == RATE_MATCH_NONE &&
+++	    state->interface != PHY_INTERFACE_MODE_RXAUI &&
+++	    state->interface != PHY_INTERFACE_MODE_XAUI &&
+++	    state->interface != PHY_INTERFACE_MODE_USXGMII)
+++		state->interface = PHY_INTERFACE_MODE_NA;
+++
+++	return phylink_validate(pl, supported, state);
+++}
+++
++ static int phylink_bringup_phy(struct phylink *pl, struct phy_device *phy,
++ 			       phy_interface_t interface)
++ {
++@@ -1758,32 +1787,9 @@ static int phylink_bringup_phy(struct ph
++ 	memset(&config, 0, sizeof(config));
++ 	linkmode_copy(supported, phy->supported);
++ 	linkmode_copy(config.advertising, phy->advertising);
+++	config.interface = interface;
++ 
++-	/* Check whether we would use rate matching for the proposed interface
++-	 * mode.
++-	 */
++-	config.rate_matching = phy_get_rate_matching(phy, interface);
++-
++-	/* Clause 45 PHYs may switch their Serdes lane between, e.g. 10GBASE-R,
++-	 * 5GBASE-R, 2500BASE-X and SGMII if they are not using rate matching.
++-	 * For some interface modes (e.g. RXAUI, XAUI and USXGMII) switching
++-	 * their Serdes is either unnecessary or not reasonable.
++-	 *
++-	 * For these which switch interface modes, we really need to know which
++-	 * interface modes the PHY supports to properly work out which ethtool
++-	 * linkmodes can be supported. For now, as a work-around, we validate
++-	 * against all interface modes, which may lead to more ethtool link
++-	 * modes being advertised than are actually supported.
++-	 */
++-	if (phy->is_c45 && config.rate_matching == RATE_MATCH_NONE &&
++-	    interface != PHY_INTERFACE_MODE_RXAUI &&
++-	    interface != PHY_INTERFACE_MODE_XAUI &&
++-	    interface != PHY_INTERFACE_MODE_USXGMII)
++-		config.interface = PHY_INTERFACE_MODE_NA;
++-	else
++-		config.interface = interface;
++-
++-	ret = phylink_validate(pl, supported, &config);
+++	ret = phylink_validate_phy(pl, phy, supported, &config);
++ 	if (ret) {
++ 		phylink_warn(pl, "validation of %s with support %*pb and advertisement %*pb failed: %pe\n",
++ 			     phy_modes(config.interface),
+diff --git a/target/linux/generic/backport-6.6/895-07-v6.8-net-phylink-use-the-PHY-s-possible_interfaces-if-pop.patch b/target/linux/generic/backport-6.6/895-07-v6.8-net-phylink-use-the-PHY-s-possible_interfaces-if-pop.patch
+new file mode 100644
+index 0000000000..201afbb7cf
+--- /dev/null
++++ b/target/linux/generic/backport-6.6/895-07-v6.8-net-phylink-use-the-PHY-s-possible_interfaces-if-pop.patch
+@@ -0,0 +1,130 @@
++From 8f7a9799c5949f94ecc3acfd71b36437a7ade73b Mon Sep 17 00:00:00 2001
++From: "Russell King (Oracle)" <rmk+kernel@armlinux.org.uk>
++Date: Fri, 24 Nov 2023 12:28:39 +0000
++Subject: [PATCH 7/7] net: phylink: use the PHY's possible_interfaces if
++ populated
++
++Some PHYs such as Aquantia, Broadcom 84881, and Marvell 88X33x0 can
++switch between a set of interface types depending on the negotiated
++media speed, or can use rate adaption for some or all of these
++interface types.
++
++We currently assume that these are Clause 45 PHYs that are configured
++not to use a specific set of interface modes, which has worked so far,
++but is just a work-around. In this workaround, we validate using all
++interfaces that the MAC supports, which can lead to extra modes being
++advertised that can not be supported.
++
++To properly address this, switch to using the newly introduced PHY
++possible_interfaces bitmap which indicates which interface modes will
++be used by the PHY as configured. We calculate the union of the PHY's
++possible interfaces and MACs supported interfaces, checking that is
++non-empty. If the PHY is on a SFP, we further reduce the set by those
++which can be used on a SFP module, again checking that is non-empty.
++Finally, we validate the subset of interfaces, taking account of
++whether rate matching will be used for each individual interface mode.
++
++This becomes independent of whether the PHY is clause 22 or clause 45.
++
++It is encouraged that all PHYs that switch interface modes or use
++rate matching should populate phydev->possible_interfaces.
++
++Tested-by: Luo Jie <quic_luoj@quicinc.com>
++Signed-off-by: Russell King (Oracle) <rmk+kernel@armlinux.org.uk>
++Reviewed-by: Andrew Lunn <andrew@lunn.ch>
++Link: https://lore.kernel.org/r/E1r6VIV-00DDMF-Pi@rmk-PC.armlinux.org.uk
++Signed-off-by: Jakub Kicinski <kuba@kernel.org>
++---
++ drivers/net/phy/phylink.c | 67 +++++++++++++++++++++++++++++++--------
++ 1 file changed, 54 insertions(+), 13 deletions(-)
++
++--- a/drivers/net/phy/phylink.c
+++++ b/drivers/net/phy/phylink.c
++@@ -121,6 +121,19 @@ do {									\
++ })
++ #endif
++ 
+++static const phy_interface_t phylink_sfp_interface_preference[] = {
+++	PHY_INTERFACE_MODE_25GBASER,
+++	PHY_INTERFACE_MODE_USXGMII,
+++	PHY_INTERFACE_MODE_10GBASER,
+++	PHY_INTERFACE_MODE_5GBASER,
+++	PHY_INTERFACE_MODE_2500BASEX,
+++	PHY_INTERFACE_MODE_SGMII,
+++	PHY_INTERFACE_MODE_1000BASEX,
+++	PHY_INTERFACE_MODE_100BASEX,
+++};
+++
+++static DECLARE_PHY_INTERFACE_MASK(phylink_sfp_interfaces);
+++
++ /**
++  * phylink_set_port_modes() - set the port type modes in the ethtool mask
++  * @mask: ethtool link mode mask
++@@ -1742,6 +1755,47 @@ static int phylink_validate_phy(struct p
++ 				unsigned long *supported,
++ 				struct phylink_link_state *state)
++ {
+++	DECLARE_PHY_INTERFACE_MASK(interfaces);
+++
+++	/* If the PHY provides a bitmap of the interfaces it will be using
+++	 * depending on the negotiated media speeds, use this to validate
+++	 * which ethtool link modes can be used.
+++	 */
+++	if (!phy_interface_empty(phy->possible_interfaces)) {
+++		/* We only care about the union of the PHY's interfaces and
+++		 * those which the host supports.
+++		 */
+++		phy_interface_and(interfaces, phy->possible_interfaces,
+++				  pl->config->supported_interfaces);
+++
+++		if (phy_interface_empty(interfaces)) {
+++			phylink_err(pl, "PHY has no common interfaces\n");
+++			return -EINVAL;
+++		}
+++
+++		if (phy_on_sfp(phy)) {
+++			/* If the PHY is on a SFP, limit the interfaces to
+++			 * those that can be used with a SFP module.
+++			 */
+++			phy_interface_and(interfaces, interfaces,
+++					  phylink_sfp_interfaces);
+++
+++			if (phy_interface_empty(interfaces)) {
+++				phylink_err(pl, "SFP PHY's possible interfaces becomes empty\n");
+++				return -EINVAL;
+++			}
+++		}
+++
+++		phylink_dbg(pl, "PHY %s uses interfaces %*pbl, validating %*pbl\n",
+++			    phydev_name(phy),
+++			    (int)PHY_INTERFACE_MODE_MAX,
+++			    phy->possible_interfaces,
+++			    (int)PHY_INTERFACE_MODE_MAX, interfaces);
+++
+++		return phylink_validate_mask(pl, phy, supported, state,
+++					     interfaces);
+++	}
+++
++ 	/* Check whether we would use rate matching for the proposed interface
++ 	 * mode.
++ 	 */
++@@ -2985,19 +3039,6 @@ static void phylink_sfp_detach(void *ups
++ 	pl->netdev->sfp_bus = NULL;
++ }
++ 
++-static const phy_interface_t phylink_sfp_interface_preference[] = {
++-	PHY_INTERFACE_MODE_25GBASER,
++-	PHY_INTERFACE_MODE_USXGMII,
++-	PHY_INTERFACE_MODE_10GBASER,
++-	PHY_INTERFACE_MODE_5GBASER,
++-	PHY_INTERFACE_MODE_2500BASEX,
++-	PHY_INTERFACE_MODE_SGMII,
++-	PHY_INTERFACE_MODE_1000BASEX,
++-	PHY_INTERFACE_MODE_100BASEX,
++-};
++-
++-static DECLARE_PHY_INTERFACE_MASK(phylink_sfp_interfaces);
++-
++ static phy_interface_t phylink_choose_sfp_interface(struct phylink *pl,
++ 						    const unsigned long *intf)
++ {
+diff --git a/target/linux/generic/pending-6.6/781-01-net-phy-qcom-qca808x-add-helper-for-checking-for-1G-.patch b/target/linux/generic/pending-6.6/781-01-net-phy-qcom-qca808x-add-helper-for-checking-for-1G-.patch
+new file mode 100644
+index 0000000000..dd2a48f94f
+--- /dev/null
++++ b/target/linux/generic/pending-6.6/781-01-net-phy-qcom-qca808x-add-helper-for-checking-for-1G-.patch
+@@ -0,0 +1,52 @@
++From 3650e4e3e1569b8ffb95a2411faae63b9b3319c2 Mon Sep 17 00:00:00 2001
++From: Robert Marko <robimarko@gmail.com>
++Date: Tue, 27 Feb 2024 16:59:46 +0100
++Subject: [PATCH net-next 1/2] net: phy: qcom: qca808x: add helper for checking
++ for 1G only model
++
++There are 2 versions of QCA808x, one 2.5G capable and one 1G capable.
++Currently, this matter only in the .get_features call however, it will
++be required for filling supported interface modes so lets add a helper
++that can be reused.
++
++Signed-off-by: Robert Marko <robimarko@gmail.com>
++---
++ drivers/net/phy/qcom/qca808x.c | 20 +++++++++++++++-----
++ 1 file changed, 15 insertions(+), 5 deletions(-)
++
++--- a/drivers/net/phy/qcom/qca808x.c
+++++ b/drivers/net/phy/qcom/qca808x.c
++@@ -156,6 +156,20 @@ static bool qca808x_has_fast_retrain_or_
++ 	return linkmode_test_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT, phydev->supported);
++ }
++ 
+++static bool qca808x_is_1g_only(struct phy_device *phydev)
+++{
+++	int ret;
+++
+++	ret = phy_read_mmd(phydev, MDIO_MMD_AN, QCA808X_PHY_MMD7_CHIP_TYPE);
+++	if (ret < 0)
+++		return true;
+++
+++	if (QCA808X_PHY_CHIP_TYPE_1G & ret)
+++		return true;
+++	else
+++		return false;
+++}
+++
++ static int qca808x_probe(struct phy_device *phydev)
++ {
++ 	struct device *dev = &phydev->mdio.dev;
++@@ -350,11 +364,7 @@ static int qca808x_get_features(struct p
++ 	 * existed in the bit0 of MMD1.21, we need to remove it manually if
++ 	 * it is the qca8081 1G chip according to the bit0 of MMD7.0x901d.
++ 	 */
++-	ret = phy_read_mmd(phydev, MDIO_MMD_AN, QCA808X_PHY_MMD7_CHIP_TYPE);
++-	if (ret < 0)
++-		return ret;
++-
++-	if (QCA808X_PHY_CHIP_TYPE_1G & ret)
+++	if (qca808x_is_1g_only(phydev))
++ 		linkmode_clear_bit(ETHTOOL_LINK_MODE_2500baseT_Full_BIT, phydev->supported);
++ 
++ 	return 0;
+diff --git a/target/linux/generic/pending-6.6/781-02-net-phy-qcom-qca808x-fill-in-possible_interfaces.patch b/target/linux/generic/pending-6.6/781-02-net-phy-qcom-qca808x-fill-in-possible_interfaces.patch
+new file mode 100644
+index 0000000000..79aeb9ef0d
+--- /dev/null
++++ b/target/linux/generic/pending-6.6/781-02-net-phy-qcom-qca808x-fill-in-possible_interfaces.patch
+@@ -0,0 +1,43 @@
++From 9517ecddfc3c473a5e50d07a543768c0273d951b Mon Sep 17 00:00:00 2001
++From: Robert Marko <robimarko@gmail.com>
++Date: Tue, 27 Feb 2024 17:03:59 +0100
++Subject: [PATCH net-next 2/2] net: phy: qcom: qca808x: fill in
++ possible_interfaces
++
++Currently QCA808x driver does not fill the possible_interfaces.
++2.5G QCA808x support SGMII and 2500Base-X while 1G model only supports
++SGMII, so fill the possible_interfaces accordingly.
++
++Signed-off-by: Robert Marko <robimarko@gmail.com>
++---
++ drivers/net/phy/qcom/qca808x.c | 12 ++++++++++++
++ 1 file changed, 12 insertions(+)
++
++--- a/drivers/net/phy/qcom/qca808x.c
+++++ b/drivers/net/phy/qcom/qca808x.c
++@@ -170,6 +170,16 @@ static bool qca808x_is_1g_only(struct ph
++ 		return false;
++ }
++ 
+++static void qca808x_fill_possible_interfaces(struct phy_device *phydev)
+++{
+++	unsigned long *possible = phydev->possible_interfaces;
+++
+++	__set_bit(PHY_INTERFACE_MODE_SGMII, possible);
+++
+++	if (!qca808x_is_1g_only(phydev))
+++		__set_bit(PHY_INTERFACE_MODE_2500BASEX, possible);
+++}
+++
++ static int qca808x_probe(struct phy_device *phydev)
++ {
++ 	struct device *dev = &phydev->mdio.dev;
++@@ -234,6 +244,8 @@ static int qca808x_config_init(struct ph
++ 		}
++ 	}
++ 
+++	qca808x_fill_possible_interfaces(phydev);
+++
++ 	/* Configure adc threshold as 100mv for the link 10M */
++ 	return at803x_debug_reg_mask(phydev, QCA808X_PHY_DEBUG_ADC_THRESHOLD,
++ 				     QCA808X_ADC_THRESHOLD_MASK,
+-- 
+2.43.0
+

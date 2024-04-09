@@ -30,6 +30,15 @@ RUN chmod 777 /home/openwrt/openwrt/.config
 USER openwrt
 RUN export TERM=xterm
 
+#ADD ./toolchain-aarch64_cortex-a72_gcc-12.3.0_musl /home/openwrt/
+
+RUN git config --global user.email "ireneusz.rybicki@outlook.com"
+RUN git config --global user.name "Ireneusz Rybicki"
+WORKDIR /home/openwrt/patchs
+COPY  patchs/$DEVICE.patch /home/openwrt/patchs
+WORKDIR /home/openwrt/openwrt
+RUN git am --whitespace=fix /home/openwrt/patchs/$DEVICE.patch
+
 ## Clone and prepare HaasMesh
 RUN if [ $SHOULD_ADD_HAASMESH -eq 1 ]; then \
     git clone https://github.com/drandyhaas/haasmesh.git && \
@@ -47,4 +56,4 @@ RUN if [ -z $CPUS ]; then \
     ; fi
 
 FROM scratch AS export-stage
-COPY --from=build-stage /home/openwrt/openwrt/bin/targets/ /
+COPY --from=build-stage /home/openwrt/openwrt/bin/ /
